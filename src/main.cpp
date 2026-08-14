@@ -14,9 +14,7 @@
 
 // - Modos de teste de periféricos selecionáveis em CURRENT_TEST
 
-// - Serial BLE simples: "0" = parar, "1" = andar
-
- 
+// - Serial BLE simples: "M0" = parar, "M1" = andar
 
 #include <stdio.h>
 
@@ -31,6 +29,9 @@
 #include <stdarg.h>
 
 #include <string.h>
+
+#include <string>
+
 
  
 
@@ -504,25 +505,15 @@ static void mux_init(void)
 
 {
 
-    gpio_config_t io_conf = {
-
-        .pin_bit_mask = (1ULL << MUX_SEL0_GPIO) |
-
-                        (1ULL << MUX_SEL1_GPIO) |
-
-                        (1ULL << MUX_SEL2_GPIO) |
-
-                        (1ULL << MUX_SEL3_GPIO),
-
-        .mode = GPIO_MODE_OUTPUT,
-
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-
-        .intr_type = GPIO_INTR_DISABLE,
-
-    };
+    gpio_config_t io_conf = {};
+    io_conf.pin_bit_mask = (1ULL << MUX_SEL0_GPIO) |
+                           (1ULL << MUX_SEL1_GPIO) |
+                           (1ULL << MUX_SEL2_GPIO) |
+                           (1ULL << MUX_SEL3_GPIO);
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
 
     gpio_config(&io_conf);
 
@@ -545,461 +536,237 @@ static void mux_set_channel(uint8_t ch)
 {
 
     gpio_set_level(MUX_SEL0_GPIO, (ch >> 0) & 0x01);
-
     gpio_set_level(MUX_SEL1_GPIO, (ch >> 1) & 0x01);
-
     gpio_set_level(MUX_SEL2_GPIO, (ch >> 2) & 0x01);
-
     gpio_set_level(MUX_SEL3_GPIO, (ch >> 3) & 0x01);
-
- 
 
     esp_rom_delay_us(10);
 
 }
 
- 
-
 // ==================== SENSORES QRE (ADC ONESHOT) ====================
-
- 
-
 static void qre_calib_global_init(void)
-
 {
-
     g_qre_min_all = UINT16_MAX;
-
     g_qre_max_all = 0;
-
 }
 
- 
-
 static void qre_calib_global_update(const uint16_t *front, const uint16_t *side)
-
 {
-
     for (int i = 0; i < NUM_FRONT_SENSORS; i++) {
-
         uint16_t v = front[i];
-
         if (v < g_qre_min_all) g_qre_min_all = v;
-
         if (v > g_qre_max_all) g_qre_max_all = v;
-
     }
 
     for (int i = 0; i < NUM_SIDE_SENSORS; i++) {
-
         uint16_t v = side[i];
-
         if (v < g_qre_min_all) g_qre_min_all = v;
-
         if (v > g_qre_max_all) g_qre_max_all = v;
-
     }
 
 }
 
- 
-
 static void qre_calib_global_finish_and_apply(void)
-
 {
-
     uint16_t minv = g_qre_min_all;  // ≈ branco
-
     uint16_t maxv = g_qre_max_all;  // ≈ preto
-
     if (minv == UINT16_MAX || maxv <= minv) {
 
         ESP_LOGW(TAG, "Calibracao QRE invalida (min/max nao atualizados), mantendo thresholds default.");
-
         return;
-
     }
 
- 
-
     // faixa = [minv (branco) ... maxv (preto)]
-
     uint16_t range = (uint16_t)(maxv - minv);
 
- 
-
     // threshold para "linha branca": um pouco acima do branco (baixo)
-
     uint16_t thr_line = (uint16_t)(minv + range / 4);
 
- 
-
     // threshold para "tudo preto": um pouco abaixo do preto (alto)
-
     uint16_t thr_black = (uint16_t)(maxv - range / 4);
 
- 
-
     g_black_level_threshold  = thr_black;
-
     g_front_mark_threshold   = thr_line;
-
     g_side_mark_threshold    = thr_line;
 
- 
-
     ESP_LOGI(TAG, "=== CALIB QRE (invertido) ===");
-
     ESP_LOGI(TAG, "MIN (branco aprox) = %u", minv);
-
     ESP_LOGI(TAG, "MAX (preto aprox)  = %u", maxv);
-
     ESP_LOGI(TAG, "BLACK_LEVEL_THRESHOLD  = %u", g_black_level_threshold);
-
     ESP_LOGI(TAG, "FRONT_MARK_THRESHOLD   = %u", g_front_mark_threshold);
-
     ESP_LOGI(TAG, "SIDE_MARK_THRESHOLD    = %u", g_side_mark_threshold);
 
 }
 
- 
-
 static void qre_calib_global_print(void)
-
 {
-
     uint16_t minv = g_qre_min_all;
-
     uint16_t maxv = g_qre_max_all;
-
     uint16_t thr  = (uint16_t)((minv + maxv) / 2);
 
- 
-
     ESP_LOGI(TAG, "=== CALIBRACAO GLOBAL QRE ===");
-
     ESP_LOGI(TAG, "MIN (preto aprox)  = %u", minv);
-
     ESP_LOGI(TAG, "MAX (branco aprox) = %u", maxv);
-
     ESP_LOGI(TAG, "THRESHOLD (meio)   = %u", thr);
-
     ESP_LOGI(TAG, "Sugestao BLACK_LEVEL_THRESHOLD  ~= %u", minv + (maxv - minv) / 4);
-
     ESP_LOGI(TAG, "Sugestao FRONT/SIDE_MARK_THRESHOLD ~= %u", thr);
 
 }
 
- 
-
 static void qre_init(void)
-
 {
 
     mux_init();
-
- 
-
-    adc_oneshot_unit_init_cfg_t init_cfg = {
-
-        .unit_id = ADC_UNIT_1,
-
-        .ulp_mode = ADC_ULP_MODE_DISABLE,
-
-    };
+    adc_oneshot_unit_init_cfg_t init_cfg = {};
+    init_cfg.unit_id = ADC_UNIT_1;
+    init_cfg.ulp_mode = ADC_ULP_MODE_DISABLE;
 
     esp_err_t err = adc_oneshot_new_unit(&init_cfg, &s_adc_handle);
-
     if (err != ESP_OK) {
-
         ESP_LOGE(TAG, "adc_oneshot_new_unit falhou: %s", esp_err_to_name(err));
-
         return;
-
     }
 
- 
-
-    adc_oneshot_chan_cfg_t chan_cfg = {
-
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-
-        .atten = ADC_ATTEN_DB_12,
-
-    };
+    adc_oneshot_chan_cfg_t chan_cfg = {};
+    chan_cfg.bitwidth = ADC_BITWIDTH_DEFAULT;
+    chan_cfg.atten = ADC_ATTEN_DB_12;
 
     err = adc_oneshot_config_channel(s_adc_handle, MUX_ADC_CH, &chan_cfg);
-
     if (err != ESP_OK) {
-
         ESP_LOGE(TAG, "adc_oneshot_config_channel falhou: %s", esp_err_to_name(err));
-
         return;
-
     }
-
- 
 
     ESP_LOGI(TAG, "QRE + MUX inicializados (ADC oneshot).");
-
 }
-
- 
 
 static void qre_read_front(uint16_t *front_values)
-
 {
-
     for (int i = 0; i < NUM_FRONT_SENSORS; i++) {
-
         uint8_t ch = front_mux_channel[i];
-
         mux_set_channel(ch);
 
- 
-
         int raw = 0;
-
         esp_err_t err = adc_oneshot_read(s_adc_handle, FRONT_MUX_ADC_CH, &raw);
-
         if (err != ESP_OK || raw < 0) {
-
             raw = 0;
-
         }
-
         front_values[i] = (uint16_t)raw;
-
     }
-
 }
-
- 
 
 static void qre_read_side(uint16_t *side_values)
-
 {
-
     for (int i = 0; i < NUM_SIDE_SENSORS; i++) {
-
         uint8_t ch = side_mux_channel[i];
-
         mux_set_channel(ch);
 
- 
-
         int raw = 0;
-
         esp_err_t err = adc_oneshot_read(s_adc_handle, SIDE_MUX_ADC_CH, &raw);
-
         if (err != ESP_OK || raw < 0) {
-
             raw = 0;
-
         }
-
         side_values[i] = (uint16_t)raw;
-
     }
-
 }
 
- 
-
 // ==================== DETECÇÃO DE MARCAÇÕES ====================
-
- 
-
 static lane_marks_t detect_lane_marks(const uint16_t *front_values,
-
                                       const uint16_t *side_values)
 
 {
 
     static uint16_t side_hist[NUM_SIDE_SENSORS][MOVING_AVG_WINDOW];
-
     static uint32_t side_sum[NUM_SIDE_SENSORS];
-
     static uint16_t front_hist[NUM_FRONT_SENSORS][MOVING_AVG_WINDOW];
-
     static uint32_t front_sum[NUM_FRONT_SENSORS];
-
     static int hist_index = 0;
 
- 
-
     float side_avg[NUM_SIDE_SENSORS] = {0};
-
     float front_avg[NUM_FRONT_SENSORS] = {0};
 
-    lane_marks_t marks = {0};
-
- 
+    lane_marks_t marks{};
 
     for (int i = 0; i < NUM_SIDE_SENSORS; i++) {
-
         side_sum[i] -= side_hist[i][hist_index];
-
         side_hist[i][hist_index] = side_values[i];
-
         side_sum[i] += side_values[i];
-
         side_avg[i] = side_sum[i] / (float)MOVING_AVG_WINDOW;
-
     }
-
- 
 
     for (int j = 0; j < NUM_FRONT_SENSORS; j++) {
-
         front_sum[j] -= front_hist[j][hist_index];
-
         front_hist[j][hist_index] = front_values[j];
-
         front_sum[j] += front_values[j];
-
         front_avg[j] = front_sum[j] / (float)MOVING_AVG_WINDOW;
-
     }
-
- 
 
     hist_index = (hist_index + 1) % MOVING_AVG_WINDOW;
 
- 
-
     float avg_side_0 = (NUM_SIDE_SENSORS > 0) ? side_avg[0] : 0.0f;
-
     float avg_side_1 = (NUM_SIDE_SENSORS > 1) ? side_avg[1] : 0.0f;
-
     float avg_side_2 = (NUM_SIDE_SENSORS > 2) ? side_avg[2] : 0.0f;
-
     float avg_side_3 = (NUM_SIDE_SENSORS > 3) ? side_avg[3] : 0.0f;
 
- 
-
     marks.left_mark  = (avg_side_0 < g_side_mark_threshold) ||
-
                        (avg_side_1 < g_side_mark_threshold);
 
- 
-
     marks.right_mark = (avg_side_2 < g_side_mark_threshold) ||
-
                        (avg_side_3 < g_side_mark_threshold);
 
- 
-
     int active_front = 0;
-
     for (int j = 0; j < NUM_FRONT_SENSORS; j++) {
-
         if (front_avg[j] < g_front_mark_threshold) {
-
             active_front++;
-
         }
-
     }
-
- 
 
     marks.is_crossing = (marks.left_mark &&
-
                          marks.right_mark &&
-
                          active_front >= MIN_FRONT_ON_FOR_CROSS);
 
- 
-
     return marks;
-
 }
-
- 
 
 // ==================== POSIÇÃO DA LINHA ====================
-
- 
-
 static float compute_line_position(const uint16_t *front_values)
-
 {
-
     float num = 0.0f;
-
     float den = 0.0f;
 
- 
-
     // usa g_qre_min_all / g_qre_max_all para inverter
-
     uint16_t minv = g_qre_min_all;
-
     uint16_t maxv = g_qre_max_all;
-
     if (minv == UINT16_MAX || maxv <= minv) {
-
         // se calib falhou, usa valor cru mesmo
-
         minv = 0;
-
         maxv = 4095;
-
     }
-
- 
 
     for (int i = 0; i < NUM_FRONT_SENSORS; i++) {
-
         float weight = (float)i - (NUM_FRONT_SENSORS - 1) / 2.0f;
 
- 
-
         // valor invertido: branco (baixo) vira alto, preto (alto) vira baixo
-
         float raw   = (float)front_values[i];
-
         float value = (float)maxv + (float)minv - raw;
-
         if (value < 0.0f) value = 0.0f;
-
- 
-
         num += weight * value;
-
         den += value;
-
     }
-
- 
 
     if (den < 1e-3f) {
-
         return 0.0f; // linha perdida
-
     }
 
- 
-
     float position   = num / den;
-
     float max_weight = (NUM_FRONT_SENSORS - 1) / 2.0f;
-
     return position / max_weight;  // ~[-1, 1]
-
 }
 
- 
-
 // ==================== MOTORES (LEDC + VNH5050) ====================
-
- 
-
 static void set_left_dir(int sign)
-
 {
-
     if (sign > 0) {
 
         gpio_set_level(DIR_ML1_GPIO, 1);
@@ -1025,15 +792,10 @@ static void set_left_dir(int sign)
         s_encoder_left_sign = 0;
 
     }
-
 }
 
- 
-
 static void set_right_dir(int sign)
-
 {
-
     if (sign > 0) {
 
         gpio_set_level(DIR_MR1_GPIO, 0);
@@ -1062,33 +824,20 @@ static void set_right_dir(int sign)
 
 }
 
- 
-
 static void motors_init(void)
-
 {
 
     // DIR pinos do VNH5050
 
-    gpio_config_t io_conf = {
-
-        .pin_bit_mask = (1ULL << DIR_ML1_GPIO) |
-
-                        (1ULL << DIR_ML2_GPIO) |
-
-                        (1ULL << DIR_MR1_GPIO) |
-
-                        (1ULL << DIR_MR2_GPIO),
-
-        .mode = GPIO_MODE_OUTPUT,
-
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-
-        .intr_type = GPIO_INTR_DISABLE,
-
-    };
+    gpio_config_t io_conf = {};
+    io_conf.pin_bit_mask = (1ULL << DIR_ML1_GPIO) |
+                           (1ULL << DIR_ML2_GPIO) |
+                           (1ULL << DIR_MR1_GPIO) |
+                           (1ULL << DIR_MR2_GPIO);
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
 
     gpio_config(&io_conf);
 
@@ -1104,19 +853,12 @@ static void motors_init(void)
 
     // Timer LEDC
 
-    ledc_timer_config_t timer_cfg = {
-
-        .speed_mode       = LEDC_MODE_MOTOR,
-
-        .duty_resolution  = MOTOR_PWM_RESOLUTION,
-
-        .timer_num        = LEDC_TIMER_MOTOR,
-
-        .freq_hz          = MOTOR_PWM_FREQ_HZ,
-
-        .clk_cfg          = LEDC_AUTO_CLK,
-
-    };
+    ledc_timer_config_t timer_cfg = {};
+    timer_cfg.speed_mode = LEDC_MODE_MOTOR;
+    timer_cfg.duty_resolution = MOTOR_PWM_RESOLUTION;
+    timer_cfg.timer_num = LEDC_TIMER_MOTOR;
+    timer_cfg.freq_hz = MOTOR_PWM_FREQ_HZ;
+    timer_cfg.clk_cfg = LEDC_AUTO_CLK;
 
     ledc_timer_config(&timer_cfg);
 
@@ -1124,23 +866,14 @@ static void motors_init(void)
 
     // Canal esquerdo
 
-    ledc_channel_config_t ch_left = {
-
-        .gpio_num   = GPIO_MOTOR_LEFT_PWM,
-
-        .speed_mode = LEDC_MODE_MOTOR,
-
-        .channel    = LEDC_CHANNEL_LEFT,
-
-        .intr_type  = LEDC_INTR_DISABLE,
-
-        .timer_sel  = LEDC_TIMER_MOTOR,
-
-        .duty       = 0,
-
-        .hpoint     = 0,
-
-    };
+    ledc_channel_config_t ch_left = {};
+    ch_left.gpio_num = GPIO_MOTOR_LEFT_PWM;
+    ch_left.speed_mode = LEDC_MODE_MOTOR;
+    ch_left.channel = LEDC_CHANNEL_LEFT;
+    ch_left.intr_type = LEDC_INTR_DISABLE;
+    ch_left.timer_sel = LEDC_TIMER_MOTOR;
+    ch_left.duty = 0;
+    ch_left.hpoint = 0;
 
     ledc_channel_config(&ch_left);
 
@@ -1148,23 +881,14 @@ static void motors_init(void)
 
     // Canal direito
 
-    ledc_channel_config_t ch_right = {
-
-        .gpio_num   = GPIO_MOTOR_RIGHT_PWM,
-
-        .speed_mode = LEDC_MODE_MOTOR,
-
-        .channel    = LEDC_CHANNEL_RIGHT,
-
-        .intr_type  = LEDC_INTR_DISABLE,
-
-        .timer_sel  = LEDC_TIMER_MOTOR,
-
-        .duty       = 0,
-
-        .hpoint     = 0,
-
-    };
+    ledc_channel_config_t ch_right = {};
+    ch_right.gpio_num = GPIO_MOTOR_RIGHT_PWM;
+    ch_right.speed_mode = LEDC_MODE_MOTOR;
+    ch_right.channel = LEDC_CHANNEL_RIGHT;
+    ch_right.intr_type = LEDC_INTR_DISABLE;
+    ch_right.timer_sel = LEDC_TIMER_MOTOR;
+    ch_right.duty = 0;
+    ch_right.hpoint = 0;
 
     ledc_channel_config(&ch_right);
 
@@ -1242,23 +966,14 @@ static void suction_init(void)
 
     // Usa mesmo timer, canal separado
 
-    ledc_channel_config_t ch_suction = {
-
-        .gpio_num   = GPIO_SUCTION_PWM,
-
-        .speed_mode = LEDC_MODE_MOTOR,
-
-        .channel    = LEDC_CHANNEL_SUCTION,
-
-        .intr_type  = LEDC_INTR_DISABLE,
-
-        .timer_sel  = LEDC_TIMER_MOTOR,
-
-        .duty       = 0,
-
-        .hpoint     = 0,
-
-    };
+    ledc_channel_config_t ch_suction = {};
+    ch_suction.gpio_num = GPIO_SUCTION_PWM;
+    ch_suction.speed_mode = LEDC_MODE_MOTOR;
+    ch_suction.channel = LEDC_CHANNEL_SUCTION;
+    ch_suction.intr_type = LEDC_INTR_DISABLE;
+    ch_suction.timer_sel = LEDC_TIMER_MOTOR;
+    ch_suction.duty = 0;
+    ch_suction.hpoint = 0;
 
     ledc_channel_config(&ch_suction);
 
@@ -1330,21 +1045,12 @@ static void encoders_init(void)
 
 {
 
-    gpio_config_t io_conf = {
-
-        .pin_bit_mask = (1ULL << GPIO_ENC_L1) |
-
-                        (1ULL << GPIO_ENC_R1),
-
-        .mode = GPIO_MODE_INPUT,
-
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-
-        .intr_type = GPIO_INTR_POSEDGE,
-
-    };
+    gpio_config_t io_conf = {};
+    io_conf.pin_bit_mask = (1ULL << GPIO_ENC_L1) | (1ULL << GPIO_ENC_R1);
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.intr_type = GPIO_INTR_POSEDGE;
 
     gpio_config(&io_conf);
 
@@ -1436,23 +1142,14 @@ static esp_err_t imu_i2c_init(void)
 
 {
 
-    i2c_config_t conf = {
-
-        .mode = I2C_MODE_MASTER,
-
-        .sda_io_num = IMU_I2C_SDA_GPIO,
-
-        .scl_io_num = IMU_I2C_SCL_GPIO,
-
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-
-        .master.clk_speed = IMU_I2C_FREQ_HZ,
-
-        .clk_flags = 0,
-
-    };
+    i2c_config_t conf = {};
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = IMU_I2C_SDA_GPIO;
+    conf.scl_io_num = IMU_I2C_SCL_GPIO;
+    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.master.clk_speed = IMU_I2C_FREQ_HZ;
+    conf.clk_flags = 0;
 
     esp_err_t err = i2c_param_config(IMU_I2C_NUM, &conf);
 
@@ -1680,9 +1377,9 @@ static esp_err_t imu_read_raw(int16_t *ax, int16_t *ay, int16_t *az,
 
 // - Comandos aceitos (linha terminada em '\n'):
 
-//   "0" -> g_run_enabled = false  (para o robô)
+//   "M0" -> g_run_enabled = false  (para o robô)
 
-//   "1" -> g_run_enabled = true   (robô anda)
+//   "M1" -> g_run_enabled = true   (robô anda)
 
 //   qualquer outro -> resposta "ERR\n"
 
@@ -1702,7 +1399,6 @@ extern void bt_serial_send(const uint8_t *data, size_t len);
 
 static const char *BT_TAG = "BT_SERIAL";
 
-static QueueHandle_t s_bt_serial_rx_queue = NULL;
 
  
 
@@ -1788,13 +1484,13 @@ static void bt_serial_printf(const char *fmt, ...)
 
  
 
-// Parser de uma linha: aceita só "0" ou "1"
+// Parser de uma linha: aceita só "M0" ou "M1"
 
 static void bt_serial_process_line(char *line)
 
 {
 
-    ESP_LOGI(BT_TAG, "BT RX line: '%s'", line);
+    ESP_LOGI(TAG, "BT RX line: '%s'", line);
 
  
 
@@ -1810,11 +1506,11 @@ static void bt_serial_process_line(char *line)
 
  
 
-    // Comando deve ser exatamente "0" ou "1"
+    // Comando deve ser exatamente "M0" ou "M1"
 
-    if ((cmd[0] == '0' || cmd[0] == '1') && cmd[1] == '\0') {
+    if (strcmp(cmd, "M0") == 0 || strcmp(cmd, "M1") == 0) {
 
-        bool run = (cmd[0] == '1');
+        bool run = (strcmp(cmd, "M1") == 0);
 
         g_run_enabled = run;
 
@@ -1839,26 +1535,10 @@ static void bt_serial_process_line(char *line)
 void bt_serial_rx_push(const uint8_t *data, uint16_t len)
 
 {
+    ESP_LOGI(TAG, "BT RX push: %.*s", len, data);
 
-    if (s_bt_serial_rx_queue == NULL || data == NULL || len == 0) {
-
-        return;
-
-    }
-
- 
-
-    for (uint16_t i = 0; i < len; i++) {
-
-        uint8_t ch = data[i];
-
-        if (xQueueSend(s_bt_serial_rx_queue, &ch, 0) != pdTRUE) {
-
-            ESP_LOGW(BT_TAG, "BT RX queue cheia, descartando 0x%02X", (unsigned int)ch);
-
-        }
-
-    }
+    std::string datastr = std::string((const char*)data, len);
+    bt_serial_process_line((char*)datastr.c_str());
 
 }
 
@@ -1882,47 +1562,17 @@ static void bt_serial_task(void *arg)
 
  
 
-    ESP_LOGI(BT_TAG, "bt_serial_task iniciada");
+    ESP_LOGI(TAG, "bt_serial_task iniciada");
 
  
 
     for (;;) {
 
-        if (xQueueReceive(s_bt_serial_rx_queue, &ch, portMAX_DELAY) == pdTRUE) {
-
-            if (ch == '\r') {
-
-                // ignora CR
-
-                continue;
-
-            }
-
- 
-
-            if (ch == '\n' || idx >= (BT_SERIAL_LINE_BUF_LEN - 1)) {
-
-                // fim de linha ou buffer cheio
-
-                line_buf[idx] = '\0';
-
-                if (idx > 0) {
-
-                    bt_serial_process_line(line_buf);
-
-                }
-
-                idx = 0;
-
-            } else {
-
-                line_buf[idx++] = (char)ch;
-
-            }
-
-        }
+        vTaskDelay(pdMS_TO_TICKS(10));
 
     }
+
+    
 
 }
 
@@ -1934,43 +1584,28 @@ void bt_serial_init(void)
 
 {
 
-    if (s_bt_serial_rx_queue == NULL) {
+    BaseType_t res = xTaskCreate(
 
-        s_bt_serial_rx_queue = xQueueCreate(BT_SERIAL_RX_QUEUE_LENGTH, sizeof(uint8_t));
+        bt_serial_task,
 
-    }
+        "bt_serial_task",
 
- 
+        4096,
 
-    if (s_bt_serial_rx_queue != NULL) {
+        NULL,
 
-        BaseType_t res = xTaskCreate(
+        5,
 
-            bt_serial_task,
+        NULL
 
-            "bt_serial_task",
+    );
 
-            4096,
+    if (res != pdPASS) {
 
-            NULL,
-
-            5,
-
-            NULL
-
-        );
-
-        if (res != pdPASS) {
-
-            ESP_LOGW(BT_TAG, "Falha ao criar bt_serial_task");
-
-        }
-
-    } else {
-
-        ESP_LOGW(BT_TAG, "Falha ao criar fila BT RX");
+        ESP_LOGW(BT_TAG, "Falha ao criar bt_serial_task");
 
     }
+
 
 }
 
@@ -2466,19 +2101,12 @@ static void led_test_task(void *arg)
 
 {
 
-    gpio_config_t io = {
-
-        .pin_bit_mask = (1ULL << GPIO_TEST_LED),
-
-        .mode = GPIO_MODE_OUTPUT,
-
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-
-        .intr_type = GPIO_INTR_DISABLE,
-
-    };
+    gpio_config_t io = {};
+    io.pin_bit_mask = (1ULL << GPIO_TEST_LED);
+    io.mode = GPIO_MODE_OUTPUT;
+    io.pull_up_en = GPIO_PULLUP_DISABLE;
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io.intr_type = GPIO_INTR_DISABLE;
 
     gpio_config(&io);
 
@@ -2508,9 +2136,7 @@ static void led_test_task(void *arg)
 
 // ==================== app_main ====================
 
- 
-
-void app_main(void)
+extern "C" void app_main(void)
 
 {
 
@@ -2536,9 +2162,8 @@ void app_main(void)
 
     // Inicializa task de comunicação Serial BLE (0/1)
 
-    bt_serial_init();
+    //bt_serial_init();
 
- 
 
     switch (CURRENT_TEST) {
 
