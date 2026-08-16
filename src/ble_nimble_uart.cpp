@@ -1,4 +1,4 @@
-﻿// ble_nimble_uart.c - Configuração NimBLE + UART BLE simples ("M0"/"M1")
+﻿// ble_nimble_uart.cpp - Configuração NimBLE + UART BLE simples ("M0"/"M1")
 
 #include "sdkconfig.h"
 
@@ -10,13 +10,14 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
+#include "host/ble_gap.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "os/os_mbuf.h"
 
 // Implementado no main.cpp
-extern void bt_serial_rx_push(const uint8_t *data, uint16_t len);
+extern "C" void bt_serial_rx_push(const uint8_t *data, uint16_t len);
 
 static const char *TAG_BLE = "NIMBLE_UART";
 
@@ -45,6 +46,8 @@ static const ble_uuid128_t UART_CHR_TX_UUID = BLE_UUID128_INIT(
 
 static uint16_t g_conn_handle = 0;
 static uint16_t g_uart_tx_val_handle = 0;
+static uint16_t mtu  = 64;
+
 
 // ==================== GATT CALLBACK (READ/WRITE) ====================
 static int gatt_svr_chr_access_uart(uint16_t conn_handle,
@@ -58,7 +61,7 @@ static int gatt_svr_chr_access_uart(uint16_t conn_handle,
 
     switch (ctxt->op) {
     case BLE_GATT_ACCESS_OP_WRITE_CHR: {
-        uint8_t buf[64];
+        uint8_t buf[mtu];
         int len = OS_MBUF_PKTLEN(ctxt->om);
 
         if (len > (int)sizeof(buf)) {
@@ -103,6 +106,7 @@ static void ble_gatt_init_uart_service(void)
     gatt_svr_svcs[0].uuid = (const ble_uuid_t *)&UART_SVC_UUID;
     gatt_svr_svcs[0].characteristics = uart_chars;
 }
+
 // ==================== ADVERTISE ====================
 
 static uint8_t g_own_addr_type;
@@ -136,6 +140,7 @@ static int ble_gap_event_cb(struct ble_gap_event *event, void *arg)
 
         case BLE_GAP_EVENT_MTU:
             ESP_LOGI("LINE_FOLLOWER", "MTU updated: %d", event->mtu.value);
+            mtu = event->mtu.value;
             return 0;
 
         default:
@@ -159,7 +164,7 @@ static void ble_app_advertise(void)
     fields.flags = BLE_HS_ADV_F_DISC_GEN |
                    BLE_HS_ADV_F_BREDR_UNSUP;
 
-    
+
     // Anuncia o serviço UART
     fields.uuids128 = &UART_SVC_UUID;
     fields.num_uuids128 = 1;
@@ -218,7 +223,7 @@ static void host_task(void *param)
 }
 
 // ==================== API PÚBLICA ====================
-void nimble_uart_init(void)
+extern "C" void nimble_uart_init(void)
 {
     int rc;
     ESP_LOGI("LINE_FOLLOWER", "Iniciando NimBLE...");
@@ -249,12 +254,15 @@ void nimble_uart_init(void)
 }
 
 // ==================== IMPLEMENTAÇÃO DE bt_serial_send ====================
-void bt_serial_send(const uint8_t *data, size_t len)
+extern "C" void bt_serial_send(const uint8_t *data, size_t len)
 {
-    if (g_conn_handle == 0 || g_uart_tx_val_handle == 0 || data == NULL || len == 0) {
+    struct ble_gap_conn_desc desc;  
+    // Tenta encontrar a conexão ativa pelo handle
+    int conn_check = ble_gap_conn_find(g_conn_handle, &desc);
+
+    if (conn_check != 0 || g_uart_tx_val_handle == 0 || data == NULL || len == 0) {
         return;
     }
-
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
     if (!om) {
         ESP_LOGW("LINE_FOLLOWER", "Falha ao alocar mbuf para notify");
