@@ -990,7 +990,7 @@ static void line_follow_task(void *arg)
 
     TickType_t last_wake = xTaskGetTickCount();
 
-    //qre_calib_global_init();
+    qre_calib_global_init();
     ESP_LOGI(TAG, "Calibracao QRE iniciada (5s). Mova o robo sobre PRETO e BRANCO.");
 
     TickType_t start = xTaskGetTickCount();
